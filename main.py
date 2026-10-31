@@ -15,7 +15,7 @@ def E(k, d=None):
 KIND = sys.argv[1] if len(sys.argv) > 1 else "short"   # short | long
 NICHE = E("NICHE", "Hairat angez facts aur history ki kahaniyan")
 LANG = E("LANGUAGE", "Urdu")
-VOICE = E("VOICE", "ur-PK-AsadNeural")
+VOICE = E("VOICE", "ur-PK-UzmaNeural")
 OFFSET = int(E("UTC_OFFSET_HOURS", "3"))
 PUB = E("SHORT_PUBLISH_TIME", "18:00") if KIND == "short" else E("LONG_PUBLISH_TIME", "20:00")
 GEMINI = (E("GEMINI_API_KEY") or "").strip()
@@ -73,13 +73,37 @@ def parse_json(t):
     return json.loads(m.group(0))
 
 
-def ask_json(prompt):
-    for i in range(4):
+def lang_ok(d):
+    """Urdu ho to narration sirf Urdu script mein honi chahiye (Roman/Hindi nahi)."""
+    if LANG.lower() != "urdu":
+        return True
+    text = " ".join(x.get("narration", "") for x in d.get("scenes", []))
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    arabic = sum("\u0600" <= c <= "\u06ff" or "\u0750" <= c <= "\u077f" for c in letters)
+    return arabic / len(letters) >= 0.92
+
+
+def ask_json(prompt, check=False):
+    last = None
+    for i in range(5):
         try:
-            return parse_json(llm(prompt))
+            d = parse_json(llm(prompt))
         except json.JSONDecodeError as e:
             log("JSON parse error, retry:", e)
+            continue
+        last = d
+        if check and not lang_ok(d):
+            log("Narration Urdu script mein nahi, dobara try")
+            continue
+        return d
+    if last:
+        return last
     raise RuntimeError("JSON parse fail")
+
+
+RULES = f"""Narration sirf {LANG} ki asli zaban aur uski apni script mein likho (Urdu ho to Urdu script: اردو، Roman/English letters ya Hindi/Devanagari mein bilkul nahi). Saaf, aasaan, bol-chaal wali zaban, chhote jumle. Har jumle ke aakhir mein poora stop. Numbers ko alfaz mein likho (jaise 1990 ki jagah poora lafz mein). English alfaz, brackets, emoji, hashtags aur special symbols narration mein mat daalo. Narration ke andar double quotes (\") istemal mat karo."""
 
 
 def make_script():
@@ -93,18 +117,18 @@ def make_script():
             prompt = f"""Channel niche: {NICHE}. Language: {LANG}.
 Naya {KIND} YouTube video likho. In purane topics repeat mat karo: {history[-40:]}
 Pehle {n} scenes do, har scene ki narration ~{words} alfaz. Pehle scene mein strong hook.
-Narration ke andar double quotes (") istemal mat karo.
+{RULES}
 Sirf JSON do, aur kuch nahi:
-{{"title": "...", "description": "...", "tags": ["..."],
+{{"title": "...", "description": "(Urdu script mein)", "tags": ["..."],
  "scenes": [{{"narration": "...", "image_prompt": "English mein detailed visual prompt, no text in image"}}]}}"""
-            data = ask_json(prompt)
+            data = ask_json(prompt, True)
         else:
             prompt = f"""Video ka title: {data['title']}. Language: {LANG}.
 Ab tak ka aakhri scene: {data['scenes'][-1]['narration']}
 Isi kahani ko agle {n} scenes mein jaari rakho (~{words} alfaz har scene, aakhri part mein conclusion).
-Narration ke andar double quotes (") istemal mat karo.
+{RULES}
 Sirf JSON: {{"scenes": [{{"narration": "...", "image_prompt": "English visual prompt"}}]}}"""
-            data["scenes"] += ask_json(prompt)["scenes"]
+            data["scenes"] += ask_json(prompt, True)["scenes"]
     return data
 
 
@@ -186,10 +210,26 @@ def ffmpeg(args):
     return r.returncode == 0
 
 
+def pick_font():
+    try:
+        out = subprocess.run(["fc-list", ":lang=ur", "family"], capture_output=True, text=True).stdout
+        fams = [l.split(",")[0].strip() for l in out.splitlines() if l.strip()]
+        for pref in ("Noto Naskh Arabic", "Noto Sans Arabic", "Noto Nastaliq Urdu"):
+            if pref in fams:
+                return pref
+        return fams[0] if fams else None
+    except Exception:
+        return None
+
+
 def build_video(data):
     clips = []
     fs = 14 if KIND == "short" else 18
+    font = pick_font()
+    log("subtitle font:", font)
     style = f"Alignment=2,FontSize={fs},Outline=2,MarginV={120 if KIND=='short' else 40}"
+    if font:
+        style += f",FontName={font}"
     base = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},format=yuv420p"
     enc = ["-r", "25", "-c:v", "libx264", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-shortest"]
     for i, s in enumerate(data["scenes"]):
