@@ -7,7 +7,10 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 KIND = sys.argv[1] if len(sys.argv) > 1 else "short"   # short | long
-E = os.environ.get
+def E(k, d=None):
+    v = os.environ.get(k)
+    return v if v else d
+
 NICHE = E("NICHE", "Amazing facts")
 LANG = E("LANGUAGE", "Urdu")
 VOICE = E("VOICE", "ur-PK-AsadNeural")
@@ -22,8 +25,8 @@ UA = {"User-Agent": "Mozilla/5.0"}
 
 
 # ---------- 1. Script (free: Pollinations text, no key) ----------
-GEMINI = E("GEMINI_API_KEY", "").strip()
-PKEY = E("POLLINATIONS_API_KEY", "").strip()
+GEMINI = (E("GEMINI_API_KEY") or "").strip()
+PKEY = (E("POLLINATIONS_API_KEY") or "").strip()
 
 
 def post(url, payload, headers=None):
