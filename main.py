@@ -1,5 +1,6 @@
 import os, sys, json, asyncio, subprocess, datetime, urllib.parse, urllib.request, time, pathlib, re
 
+import urllib.error
 import edge_tts
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -21,17 +22,39 @@ UA = {"User-Agent": "Mozilla/5.0"}
 
 
 # ---------- 1. Script (free: Pollinations text, no key) ----------
+GEMINI = E("GEMINI_API_KEY", "").strip()
+PKEY = E("POLLINATIONS_API_KEY", "").strip()
+
+
+def post(url, payload, headers=None):
+    req = urllib.request.Request(url, json.dumps(payload).encode(),
+                                 {**UA, "Content-Type": "application/json", **(headers or {})})
+    return json.loads(urllib.request.urlopen(req, timeout=180).read())
+
+
 def llm(prompt):
-    body = json.dumps({"model": "openai", "messages": [{"role": "user", "content": prompt}]}).encode()
+    last = None
     for _ in range(5):
         try:
-            req = urllib.request.Request("https://text.pollinations.ai/openai", body,
-                                         {**UA, "Content-Type": "application/json"})
-            r = json.loads(urllib.request.urlopen(req, timeout=180).read())
+            if GEMINI:
+                r = post("https://generativelanguage.googleapis.com/v1beta/models/"
+                         f"gemini-flash-latest:generateContent?key={GEMINI}",
+                         {"contents": [{"parts": [{"text": prompt}]}]})
+                return r["candidates"][0]["content"]["parts"][0]["text"]
+            msgs = {"model": "openai", "messages": [{"role": "user", "content": prompt}]}
+            if PKEY:
+                r = post("https://gen.pollinations.ai/v1/chat/completions", msgs,
+                         {"Authorization": "Bearer " + PKEY})
+            else:
+                r = post("https://text.pollinations.ai/openai", msgs)
             return r["choices"][0]["message"]["content"]
-        except Exception:
-            time.sleep(8)
-    raise RuntimeError("LLM fail")
+        except urllib.error.HTTPError as e:
+            last = f"HTTP {e.code}: {e.read()[:300]}"
+        except Exception as e:
+            last = repr(e)
+        print("LLM error:", last, flush=True)
+        time.sleep(10)
+    raise RuntimeError("LLM fail: " + str(last))
 
 
 def parse_json(t):
@@ -98,17 +121,25 @@ async def tts(text, mp3, srt):
 # ---------- 3. Images (free: Pollinations image, no key) ----------
 def get_image(prompt, path):
     q = urllib.parse.quote(prompt + ", cinematic, high quality")
-    url = f"https://image.pollinations.ai/prompt/{q}?width={W}&height={H}&nologo=true"
+    if PKEY:
+        url = f"https://gen.pollinations.ai/image/{q}?width={W}&height={H}&nologo=true&key={PKEY}"
+    else:
+        url = f"https://image.pollinations.ai/prompt/{q}?width={W}&height={H}&nologo=true"
+    last = None
     for _ in range(5):
         try:
             data = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=120).read()
             if len(data) > 5000:
                 path.write_bytes(data)
                 return
-        except Exception:
-            pass
-        time.sleep(6)
-    raise RuntimeError("image fail: " + prompt)
+            last = "small response"
+        except urllib.error.HTTPError as e:
+            last = f"HTTP {e.code}"
+        except Exception as e:
+            last = repr(e)
+        print("Image error:", last, flush=True)
+        time.sleep(8)
+    raise RuntimeError("image fail: " + str(last))
 
 
 # ---------- 4. Video (free: FFmpeg) ----------
