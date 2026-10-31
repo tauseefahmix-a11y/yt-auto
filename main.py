@@ -1,68 +1,85 @@
-import os, sys, json, asyncio, subprocess, datetime, urllib.parse, urllib.request, time, pathlib, re
+import os, sys, json, asyncio, subprocess, datetime, time, pathlib, re
+import urllib.parse, urllib.request, urllib.error
 
-import urllib.error
 import edge_tts
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-KIND = sys.argv[1] if len(sys.argv) > 1 else "short"   # short | long
+
 def E(k, d=None):
     v = os.environ.get(k)
     return v if v else d
 
-NICHE = E("NICHE", "Amazing facts")
+
+KIND = sys.argv[1] if len(sys.argv) > 1 else "short"   # short | long
+NICHE = E("NICHE", "Hairat angez facts aur history ki kahaniyan")
 LANG = E("LANGUAGE", "Urdu")
 VOICE = E("VOICE", "ur-PK-AsadNeural")
 OFFSET = int(E("UTC_OFFSET_HOURS", "3"))
 PUB = E("SHORT_PUBLISH_TIME", "18:00") if KIND == "short" else E("LONG_PUBLISH_TIME", "20:00")
+GEMINI = (E("GEMINI_API_KEY") or "").strip()
+PKEY = (E("POLLINATIONS_API_KEY") or "").strip()
 W, H = (1080, 1920) if KIND == "short" else (1920, 1080)
 WORK = pathlib.Path("work") / KIND
 WORK.mkdir(parents=True, exist_ok=True)
 HIST = pathlib.Path("history.json")
 history = json.loads(HIST.read_text()) if HIST.exists() else []
 UA = {"User-Agent": "Mozilla/5.0"}
+GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-flash-lite-latest"]
 
 
-# ---------- 1. Script (free: Pollinations text, no key) ----------
-GEMINI = (E("GEMINI_API_KEY") or "").strip()
-PKEY = (E("POLLINATIONS_API_KEY") or "").strip()
+def log(*a):
+    print(*a, flush=True)
 
 
+# ---------- 1. Script ----------
 def post(url, payload, headers=None):
     req = urllib.request.Request(url, json.dumps(payload).encode(),
                                  {**UA, "Content-Type": "application/json", **(headers or {})})
-    return json.loads(urllib.request.urlopen(req, timeout=180).read())
+    return json.loads(urllib.request.urlopen(req, timeout=240).read())
 
 
 def llm(prompt):
     last = None
-    for _ in range(5):
-        try:
-            if GEMINI:
-                r = post("https://generativelanguage.googleapis.com/v1beta/models/"
-                         f"gemini-flash-latest:generateContent?key={GEMINI}",
+    if GEMINI:
+        for attempt in range(10):
+            model = GEMINI_MODELS[attempt % len(GEMINI_MODELS)]
+            try:
+                r = post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
+                         f":generateContent?key={GEMINI}",
                          {"contents": [{"parts": [{"text": prompt}]}]})
                 return r["candidates"][0]["content"]["parts"][0]["text"]
-            msgs = {"model": "openai", "messages": [{"role": "user", "content": prompt}]}
-            if PKEY:
-                r = post("https://gen.pollinations.ai/v1/chat/completions", msgs,
-                         {"Authorization": "Bearer " + PKEY})
-            else:
-                r = post("https://text.pollinations.ai/openai", msgs)
+            except urllib.error.HTTPError as e:
+                last = f"{model} HTTP {e.code}: {e.read()[:200]}"
+            except Exception as e:
+                last = f"{model} {e!r}"
+            log("LLM error:", last)
+            time.sleep(min(15 * (attempt + 1), 60))
+    if PKEY:
+        try:
+            r = post("https://gen.pollinations.ai/v1/chat/completions",
+                     {"model": "openai", "messages": [{"role": "user", "content": prompt}]},
+                     {"Authorization": "Bearer " + PKEY})
             return r["choices"][0]["message"]["content"]
-        except urllib.error.HTTPError as e:
-            last = f"HTTP {e.code}: {e.read()[:300]}"
         except Exception as e:
-            last = repr(e)
-        print("LLM error:", last, flush=True)
-        time.sleep(10)
+            last = f"pollinations {e!r}"
+            log("LLM error:", last)
     raise RuntimeError("LLM fail: " + str(last))
 
 
 def parse_json(t):
     m = re.search(r"\{.*\}", t, re.S)
     return json.loads(m.group(0))
+
+
+def ask_json(prompt):
+    for i in range(4):
+        try:
+            return parse_json(llm(prompt))
+        except json.JSONDecodeError as e:
+            log("JSON parse error, retry:", e)
+    raise RuntimeError("JSON parse fail")
 
 
 def make_script():
@@ -76,26 +93,28 @@ def make_script():
             prompt = f"""Channel niche: {NICHE}. Language: {LANG}.
 Naya {KIND} YouTube video likho. In purane topics repeat mat karo: {history[-40:]}
 Pehle {n} scenes do, har scene ki narration ~{words} alfaz. Pehle scene mein strong hook.
+Narration ke andar double quotes (") istemal mat karo.
 Sirf JSON do, aur kuch nahi:
 {{"title": "...", "description": "...", "tags": ["..."],
  "scenes": [{{"narration": "...", "image_prompt": "English mein detailed visual prompt, no text in image"}}]}}"""
-            data = parse_json(llm(prompt))
+            data = ask_json(prompt)
         else:
             prompt = f"""Video ka title: {data['title']}. Language: {LANG}.
 Ab tak ka aakhri scene: {data['scenes'][-1]['narration']}
 Isi kahani ko agle {n} scenes mein jaari rakho (~{words} alfaz har scene, aakhri part mein conclusion).
+Narration ke andar double quotes (") istemal mat karo.
 Sirf JSON: {{"scenes": [{{"narration": "...", "image_prompt": "English visual prompt"}}]}}"""
-            data["scenes"] += parse_json(llm(prompt))["scenes"]
+            data["scenes"] += ask_json(prompt)["scenes"]
     return data
 
 
-# ---------- 2. Voice + subtitles (free: edge-tts) ----------
+# ---------- 2. Voice + subtitles (edge-tts) ----------
 def srt_time(s):
     ms = int(s * 1000)
     return f"{ms//3600000:02}:{ms//60000%60:02}:{ms//1000%60:02},{ms%1000:03}"
 
 
-async def tts(text, mp3, srt):
+async def tts_once(text, mp3, srt):
     com = edge_tts.Communicate(text, VOICE)
     cues = []
     with open(mp3, "wb") as f:
@@ -104,24 +123,37 @@ async def tts(text, mp3, srt):
                 f.write(ch["data"])
             elif ch["type"] in ("SentenceBoundary", "WordBoundary"):
                 cues.append((ch["offset"] / 1e7, (ch["offset"] + ch["duration"]) / 1e7, ch["text"]))
+    if not pathlib.Path(mp3).stat().st_size:
+        raise RuntimeError("empty audio")
     if cues:
-        out, buf = [], []
-        for c in cues:
-            buf.append(c)
-            if len(buf) == 4:
-                out.append((buf[0][0], buf[-1][1], " ".join(x[2] for x in buf)))
-                buf = []
-        if buf:
-            out.append((buf[0][0], buf[-1][1], " ".join(x[2] for x in buf)))
-        # sentence boundary ho to har cue already poora jumla hai, group mat karo
         if any(len(c[2].split()) > 6 for c in cues):
             out = cues
+        else:
+            out, buf = [], []
+            for c in cues:
+                buf.append(c)
+                if len(buf) == 4:
+                    out.append((buf[0][0], buf[-1][1], " ".join(x[2] for x in buf)))
+                    buf = []
+            if buf:
+                out.append((buf[0][0], buf[-1][1], " ".join(x[2] for x in buf)))
         with open(srt, "w", encoding="utf-8") as f:
             for i, (a, b, t) in enumerate(out, 1):
                 f.write(f"{i}\n{srt_time(a)} --> {srt_time(b)}\n{t}\n\n")
 
 
-# ---------- 3. Images (free: Pollinations image, no key) ----------
+def tts(text, mp3, srt):
+    for i in range(5):
+        try:
+            asyncio.run(tts_once(text, mp3, srt))
+            return
+        except Exception as e:
+            log("TTS error:", repr(e))
+            time.sleep(6 * (i + 1))
+    raise RuntimeError("TTS fail")
+
+
+# ---------- 3. Images ----------
 def get_image(prompt, path):
     q = urllib.parse.quote(prompt + ", cinematic, high quality")
     if PKEY:
@@ -129,9 +161,9 @@ def get_image(prompt, path):
     else:
         url = f"https://image.pollinations.ai/prompt/{q}?width={W}&height={H}&nologo=true"
     last = None
-    for _ in range(5):
+    for _ in range(6):
         try:
-            data = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=120).read()
+            data = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=180).read()
             if len(data) > 5000:
                 path.write_bytes(data)
                 return
@@ -140,40 +172,46 @@ def get_image(prompt, path):
             last = f"HTTP {e.code}"
         except Exception as e:
             last = repr(e)
-        print("Image error:", last, flush=True)
-        time.sleep(8)
+        log("Image error:", last)
+        time.sleep(10)
     raise RuntimeError("image fail: " + str(last))
 
 
-# ---------- 4. Video (free: FFmpeg) ----------
-def run(cmd):
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+# ---------- 4. Video ----------
+def ffmpeg(args):
+    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error"] + args, cwd=WORK,
+                       capture_output=True, text=True)
+    if r.returncode:
+        log("ffmpeg error:", r.stderr[-600:])
+    return r.returncode == 0
 
 
 def build_video(data):
     clips = []
     fs = 14 if KIND == "short" else 18
     style = f"Alignment=2,FontSize={fs},Outline=2,MarginV={120 if KIND=='short' else 40}"
+    base = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},format=yuv420p"
+    enc = ["-r", "25", "-c:v", "libx264", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-shortest"]
     for i, s in enumerate(data["scenes"]):
+        log(f"scene {i+1}/{len(data['scenes'])}")
         get_image(s["image_prompt"], WORK / f"{i}.jpg")
-        asyncio.run(tts(s["narration"], WORK / f"{i}.mp3", WORK / f"{i}.srt"))
-        vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},format=yuv420p"
+        tts(s["narration"], WORK / f"{i}.mp3", WORK / f"{i}.srt")
+        inp = ["-loop", "1", "-i", f"{i}.jpg", "-i", f"{i}.mp3"]
+        ok = False
         if (WORK / f"{i}.srt").exists():
-            vf += f",subtitles={i}.srt:force_style='{style}'"
-        subprocess.run(
-            ["ffmpeg", "-y", "-loop", "1", "-i", f"{i}.jpg", "-i", f"{i}.mp3", "-vf", vf,
-             "-r", "25", "-c:v", "libx264", "-c:a", "aac", "-ar", "44100", "-ac", "2",
-             "-shortest", f"{i}.mp4"], cwd=WORK, check=True,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ok = ffmpeg(inp + ["-vf", base + f",subtitles={i}.srt:force_style='{style}'"] + enc + [f"{i}.mp4"])
+        if not ok:
+            ok = ffmpeg(inp + ["-vf", base] + enc + [f"{i}.mp4"])
+        if not ok:
+            raise RuntimeError("ffmpeg fail scene %d" % i)
         clips.append(f"{i}.mp4")
     (WORK / "list.txt").write_text("".join(f"file '{c}'\n" for c in clips))
-    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "list.txt",
-                    "-c", "copy", "final.mp4"], cwd=WORK, check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not ffmpeg(["-f", "concat", "-safe", "0", "-i", "list.txt", "-c", "copy", "final.mp4"]):
+        raise RuntimeError("concat fail")
     return WORK / "final.mp4"
 
 
-# ---------- 5. Upload + schedule (free: YouTube Data API) ----------
+# ---------- 5. Upload + schedule ----------
 def publish_at():
     h, m = map(int, PUB.split(":"))
     now = datetime.datetime.utcnow()
@@ -196,11 +234,12 @@ def upload(video, data):
     resp = None
     while resp is None:
         _, resp = req.next_chunk()
-    print("Uploaded:", resp["id"], "publishAt", body["status"]["publishAt"])
+    log("Uploaded:", resp["id"], "publishAt", body["status"]["publishAt"])
 
 
 if __name__ == "__main__":
     data = make_script()
+    log("Title:", data["title"])
     video = build_video(data)
     upload(video, data)
     history.append(data["title"])
