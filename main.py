@@ -1,11 +1,29 @@
 import os, sys, json, asyncio, subprocess, datetime, time, pathlib, re
 import urllib.parse, urllib.request, urllib.error
-
+import ssl, random
+import httplib2
+from googleapiclient.errors import HttpError
 import edge_tts
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-
+def next_chunk_retry(req):
+    retries = 0
+    while True:
+        try:
+            status, resp = req.next_chunk()
+            if status:
+                log(f"Upload {int(status.progress() * 100)}%")
+            return resp
+        except Exception as e:
+            retryable = isinstance(e, (OSError, ssl.SSLError, httplib2.HttpLib2Error)) or (
+                isinstance(e, HttpError) and e.resp.status in (500, 502, 503, 504))
+            retries += 1
+            if not retryable or retries > 12:
+                raise
+            wait = min(2 ** retries, 60) + random.random()
+            log(f"Upload error ({retries}): {e!r:.150} - {wait:.0f}s baad dobara")
+            time.sleep(wait)
 
 def E(k, d=None):
     v = os.environ.get(k)
@@ -611,10 +629,10 @@ def upload(yt, video, data):
             "status": {"privacyStatus": "private", "publishAt": publish_at(),
                        "selfDeclaredMadeForKids": False}}
     req = yt.videos().insert(part="snippet,status", body=body,
-                             media_body=MediaFileUpload(str(video), resumable=True))
+                             media_body=MediaFileUpload(str(video), mimetype="video/mp4", chunksize=8 * 1024 * 1024, resumable=True))
     resp = None
     while resp is None:
-        _, resp = req.next_chunk()
+        resp = next_chunk_retry(req)
     log("Uploaded:", resp["id"], "publishAt", body["status"]["publishAt"])
     return resp["id"]
 
