@@ -23,6 +23,19 @@ PKEY = (E("POLLINATIONS_API_KEY") or "").strip()
 ZOOM = E("KENBURNS", "1") == "1"            # slow zoom on images (0 = off)
 TREND = E("TREND_SEARCH", "1") == "1"        # niche mein chalne wale titles dekhna (0 = off)
 REL_LANG = E("RELEVANCE_LANG", "ur")
+PIXABAY = (E("PIXABAY_API_KEY") or "").strip()   # free key: asli stock video clips
+PEXELS = (E("PEXELS_API_KEY") or "").strip()     # free key (optional)
+TTS_ENGINE = E("TTS_ENGINE", "auto").lower()     # auto | gemini | edge
+GEM_VOICE = E("GEMINI_VOICE", "Charon")
+GEM_TTS_MODELS = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
+SUB_FONT = None
+USED_CLIPS = set()
+CREDITS = set()
+# Title / description / thumbnail / chapters ki zaban: roman (Roman Urdu) | english | urdu
+TSTYLE = E("TITLE_STYLE", "roman").lower()
+TDESC = {"roman": "Roman Urdu (English/Latin letters mein likhi Urdu, jaise: Is qile ka khofnak raaz)",
+         "english": "simple English",
+         }.get(TSTYLE, "Urdu script")
 W, H = (1080, 1920) if KIND == "short" else (1920, 1080)
 WORK = pathlib.Path("work") / KIND
 WORK.mkdir(parents=True, exist_ok=True)
@@ -42,6 +55,8 @@ HOOKS = [
 ]
 CUR = ["راز", "کبھی", "کیوں", "کیسے", "حیرت", "سچ", "خوفناک", "چھپا", "پراسرار", "نامعلوم",
        "آج تک", "حقیقت", "عجیب", "خطرناک", "ناقابل", "کوئی نہیں"]
+CUR_LAT = ["raaz", "raz", "kyun", "kaise", "kya ", "secret", "why", "how", "never", "hidden", "shocking",
+           "mystery", "truth", "sach", "haqeeqat", "khofnak", "hairat", "ajeeb", "pehli baar", "koi nahi", "dangerous"]
 FILL = ["آج", "السلام", "خوش آمدید", "اس ویڈیو", "ہم آج", "دوستو", "ناظرین"]
 
 
@@ -74,7 +89,8 @@ def title_issues(title, thumb):
         iss.append("thumb alfaz")
     if set(re.findall(r"\w+", thumb)) & set(re.findall(r"\w+", title)):
         iss.append("thumb title dohra raha hai")
-    if not any(c in title for c in CUR) and "؟" not in title and "?" not in title:
+    low = title.lower()
+    if not (any(c in title for c in CUR) or any(c in low for c in CUR_LAT) or "؟" in title or "?" in title):
         iss.append("curiosity nahi")
     return iss
 
@@ -182,9 +198,9 @@ def make_idea(trend):
 In purane topics repeat mat karo: {history[-40:]}
 {trend_line}
 3 alag topic ideas do. Har idea ke liye:
-- title: max 55 characters, curiosity wala, {LANG} script mein
-- thumb_text: 2 se 4 alfaz, title ke alfaz dohraye bina, jo title ko mukammal kare (title aur thumb_text ek jodi hain)
-- hook: video ka pehla jumla, 6 se 14 alfaz, in formulas mein se koi ek: {formulas}
+- title: max 55 characters, curiosity wala, {TDESC} mein (clickable, search-friendly)
+- thumb_text: 2 se 4 alfaz, {TDESC} mein, title ke alfaz dohraye bina, jo title ko mukammal kare (title aur thumb_text ek jodi hain)
+- hook: video ka pehla jumla (yeh narration hai, is liye {LANG} ki apni script mein), 6 se 14 alfaz, in formulas mein se koi ek: {formulas}
 {RULES}
 Sirf JSON: {{"ideas": [{{"title": "...", "thumb_text": "...", "hook": "...", "formula": "..."}}]}}"""
     ideas = ask_json(prompt).get("ideas", [])
@@ -221,14 +237,14 @@ def make_script(idea):
 Naya {KIND} YouTube video likho. {topic}
 Pacing: har do se teen scenes mein naya sawal, twist ya adhoori baat (open loop) rakho taake viewer ruka rahe. Faltu tamheed nahi. {end_rule}
 Pehle {n} scenes do, har scene ki narration ~{words} alfaz.
-Har scene ka "chapter": 2 se 4 alfaz ka chhota unwan.
+Har scene ka "chapter": 2 se 4 alfaz ka chhota unwan, {TDESC} mein.
 "style": ek English line jo poore video ke visuals ka ek jaisa look tay kare (art style, colour palette, lighting).
 "thumb_prompt": thumbnail ke liye English mein dramatic close-up prompt, no text in image.
 {RULES}
 Sirf JSON do, aur kuch nahi:
-{{"title": "...", "thumb_text": "...", "description": "(Urdu script mein, 2-3 jumle, pehle jumle mein main keyword)", "tags": ["..."],
+{{"title": "...", "thumb_text": "...", "description": "({TDESC} mein, 2-3 jumle, pehle jumle mein main keyword)", "tags": ["8-12 tags: English aur Roman Urdu dono ke search alfaz"],
  "style": "...", "thumb_prompt": "...",
- "scenes": [{{"narration": "...", "image_prompt": "English mein detailed visual prompt, no text in image", "chapter": "..."}}]}}"""
+ "scenes": [{{"narration": "...", "image_prompt": "English mein detailed visual prompt, no text in image", "video_query": "2-3 English alfaz stock-footage search ke liye (aam aur dekhne wali cheez, jaise: desert sunset, soldiers marching, old map)", "chapter": "..."}}]}}"""
             data = ask_json(prompt, True)
         else:
             prompt = f"""Video ka title: {data['title']}. Language: {LANG}.
@@ -236,7 +252,8 @@ Ab tak ka aakhri scene: {data['scenes'][-1]['narration']}
 Isi kahani ko agle {n} scenes mein jaari rakho (~{words} alfaz har scene, aakhri part mein conclusion). Open loops band karte jao.
 {end_rule}
 {RULES}
-Sirf JSON: {{"scenes": [{{"narration": "...", "image_prompt": "English visual prompt", "chapter": "..."}}]}}"""
+Har scene ka "chapter": 2 se 4 alfaz, {TDESC} mein.
+Sirf JSON: {{"scenes": [{{"narration": "...", "image_prompt": "English visual prompt", "video_query": "2-3 English alfaz stock-footage search ke liye", "chapter": "..."}}]}}"""
             data["scenes"] += ask_json(prompt, True)["scenes"]
     if idea:
         data["title"], data["thumb_text"] = idea["title"], idea["thumb_text"]
@@ -249,13 +266,61 @@ Sirf JSON: {{"scenes": [{{"narration": "...", "image_prompt": "English visual pr
     return data
 
 
-# ---------- 2. Voice + subtitles (edge-tts) ----------
-def srt_time(s):
-    ms = int(s * 1000)
-    return f"{ms//3600000:02}:{ms//60000%60:02}:{ms//1000%60:02},{ms%1000:03}"
+# ---------- 2. Voice + subtitles ----------
+def ass_time(s):
+    cs = int(round(s * 100))
+    return f"{cs//360000}:{cs//6000%60:02}:{cs//100%60:02}.{cs%100:02}"
 
 
-async def tts_once(text, mp3, srt):
+def make_chunks(cues):
+    """Cues ko chhote tukron (short: 4, long: 7 alfaz) mein todta hai, waqt alfaz ki lambai ke hisab se."""
+    n = 4 if KIND == "short" else 7
+    words = []
+    for a, b, t in cues:
+        ws = t.split()
+        if not ws:
+            continue
+        tot = sum(len(w) + 1 for w in ws)
+        pos = a
+        for w in ws:
+            step = (b - a) * (len(w) + 1) / tot
+            words.append((pos, pos + step, w))
+            pos += step
+    out = []
+    for i in range(0, len(words), n):
+        g = words[i:i + n]
+        out.append([g[0][0], g[-1][1], " ".join(x[2] for x in g)])
+    for i in range(len(out) - 1):
+        out[i][1] = out[i + 1][0]
+    return out
+
+
+def write_ass(cues, path):
+    """Subtitles: bari, mote, safed alfaz, kaali outline; Shorts mein neeche ke buttons se oopar."""
+    short = KIND == "short"
+    fs, mv, ol = (74, 400, 6) if short else (50, 70, 4)
+    font = SUB_FONT or "Noto Naskh Arabic"
+    head = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {W}
+PlayResY: {H}
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: D,{font},{fs},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,{ol},3,2,80,80,{mv},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(head)
+        for a, b, t in make_chunks(cues):
+            t = re.sub(r"[{}\\]", "", t)
+            f.write(f"Dialogue: 0,{ass_time(a)},{ass_time(b)},D,,0,0,0,,{t}\n")
+
+
+async def tts_once(text, mp3, ass):
     com = edge_tts.Communicate(text, VOICE)
     cues = []
     with open(mp3, "wb") as f:
@@ -267,31 +332,79 @@ async def tts_once(text, mp3, srt):
     if not pathlib.Path(mp3).stat().st_size:
         raise RuntimeError("empty audio")
     if cues:
-        if any(len(c[2].split()) > 6 for c in cues):
-            out = cues
-        else:
-            out, buf = [], []
-            for c in cues:
-                buf.append(c)
-                if len(buf) == 4:
-                    out.append((buf[0][0], buf[-1][1], " ".join(x[2] for x in buf)))
-                    buf = []
-            if buf:
-                out.append((buf[0][0], buf[-1][1], " ".join(x[2] for x in buf)))
-        with open(srt, "w", encoding="utf-8") as f:
-            for i, (a, b, t) in enumerate(out, 1):
-                f.write(f"{i}\n{srt_time(a)} --> {srt_time(b)}\n{t}\n\n")
+        write_ass(cues, ass)
 
 
-def tts(text, mp3, srt):
+def tts_edge(text, mp3, ass):
     for i in range(5):
         try:
-            asyncio.run(tts_once(text, mp3, srt))
+            asyncio.run(tts_once(text, mp3, ass))
             return
         except Exception as e:
             log("TTS error:", repr(e))
             time.sleep(6 * (i + 1))
     raise RuntimeError("TTS fail")
+
+
+def gemini_tts(text, mp3, ass):
+    """Gemini ki qudrati awaaz (free tier). Koi bhi masla ho to exception, aur upar edge-tts le leta hai."""
+    import base64
+    last = None
+    for model in GEM_TTS_MODELS:
+        for attempt in range(3):
+            try:
+                r = post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
+                         f":generateContent?key={GEMINI}",
+                         {"contents": [{"parts": [{"text": "Say in a calm, gripping documentary "
+                                                    f"storyteller voice, natural pace: {text}"}]}],
+                          "generationConfig": {"responseModalities": ["AUDIO"],
+                                               "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig":
+                                                                                {"voiceName": GEM_VOICE}}}}})
+                pcm = base64.b64decode(r["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+                if len(pcm) < 24000:
+                    raise RuntimeError("audio bohat chhota")
+                (WORK / "tmp.pcm").write_bytes(pcm)
+                if not ffmpeg(["-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "tmp.pcm",
+                               "-c:a", "libmp3lame", "-q:a", "3", pathlib.Path(mp3).name]):
+                    raise RuntimeError("pcm convert fail")
+                d = dur(mp3)
+                if d < 0.5:
+                    raise RuntimeError("audio khali")
+                write_ass([(0.0, d, text)], ass)
+                return
+            except urllib.error.HTTPError as e:
+                last = f"{model} HTTP {e.code}"
+                log("Gemini TTS:", last)
+                if e.code == 429:
+                    time.sleep(25 * (attempt + 1))
+                elif e.code in (400, 404):
+                    break
+                else:
+                    time.sleep(5)
+            except Exception as e:
+                last = f"{model} {e!r}"
+                log("Gemini TTS:", last)
+                time.sleep(5)
+    raise RuntimeError("gemini tts fail: " + str(last))
+
+
+def voice_all(data):
+    """Poori video ki awaaz ek hi engine se: pehle Gemini, koi bhi scene fail ho to saari edge-tts se."""
+    scenes = data["scenes"]
+    if TTS_ENGINE in ("auto", "gemini") and GEMINI:
+        try:
+            for i, s in enumerate(scenes):
+                gemini_tts(s["narration"], WORK / f"{i}.mp3", WORK / f"{i}.ass")
+                time.sleep(7)
+            log("voice: gemini")
+            return
+        except Exception as e:
+            log("Gemini voice nahi chali, edge-tts par:", repr(e)[:200])
+            for f in WORK.glob("*.ass"):
+                f.unlink()
+    for i, s in enumerate(scenes):
+        tts_edge(s["narration"], WORK / f"{i}.mp3", WORK / f"{i}.ass")
+    log("voice: edge-tts")
 
 
 # ---------- 3. Images ----------
@@ -349,43 +462,90 @@ def pick_font():
         return None
 
 
+def fetch_clip(q, path):
+    """Asli stock video clip (Pexels ya Pixabay, free key). Na mile to False -> AI image."""
+    short = KIND == "short"
+    try:
+        if PEXELS:
+            u = "https://api.pexels.com/videos/search?" + urllib.parse.urlencode(
+                {"query": q, "per_page": 15, "orientation": "portrait" if short else "landscape", "size": "medium"})
+            r = json.loads(urllib.request.urlopen(urllib.request.Request(
+                u, headers={**UA, "Authorization": PEXELS}), timeout=60).read())
+            for v in r.get("videos", []):
+                if ("px", v["id"]) in USED_CLIPS:
+                    continue
+                files = [f for f in v.get("video_files", []) if f.get("file_type") == "video/mp4" and f.get("width")]
+                if not files:
+                    continue
+                files.sort(key=lambda f: abs(f["width"] - (1080 if short else 1920)))
+                data = urllib.request.urlopen(urllib.request.Request(files[0]["link"], headers=UA), timeout=180).read()
+                if len(data) > 50000:
+                    path.write_bytes(data)
+                    USED_CLIPS.add(("px", v["id"]))
+                    CREDITS.add("Pexels")
+                    return True
+        if PIXABAY:
+            u = "https://pixabay.com/api/videos/?" + urllib.parse.urlencode(
+                {"key": PIXABAY, "q": q, "per_page": 20, "safesearch": "true"})
+            r = json.loads(urllib.request.urlopen(urllib.request.Request(u, headers=UA), timeout=60).read())
+            c = []
+            for h in r.get("hits", []):
+                v = h["videos"].get("medium") or h["videos"].get("large") or h["videos"].get("small")
+                if v and v.get("url") and ("pb", h["id"]) not in USED_CLIPS:
+                    c.append(((v["height"] > v["width"]) == short, h["id"], v["url"]))
+            c.sort(key=lambda x: not x[0])
+            for _, vid, url in c[:3]:
+                data = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=180).read()
+                if len(data) > 50000:
+                    path.write_bytes(data)
+                    USED_CLIPS.add(("pb", vid))
+                    return True
+    except Exception as e:
+        log("clip skip:", repr(e)[:150])
+    return False
+
+
+def try_encode(i, attempts, has_ass, af, enc):
+    for inp, vf in attempts:
+        for subs in ([True, False] if has_ass else [False]):
+            f = vf + (f",subtitles={i}.ass" if subs else "")
+            if ffmpeg(inp + ["-vf", f] + af + enc + [f"{i}.mp4"]):
+                return True
+    return False
+
+
 def build_video(data, font):
     clips, durs = [], []
-    fs = 14 if KIND == "short" else 18
-    style = f"Alignment=2,FontSize={fs},Outline=2,MarginV={120 if KIND=='short' else 40}"
-    if font:
-        style += f",FontName={font}"
     base = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},format=yuv420p"
     # audio: aakhir ki khamoshi (dead air) kaato, 0.2s saans chhor do
     af = ["-af", "areverse,silenceremove=start_periods=1:start_threshold=-45dB,areverse,apad=pad_dur=0.2"]
     enc = ["-r", "25", "-c:v", "libx264", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-shortest"]
     sty = data.get("style", "")
+    voice_all(data)
     for i, s in enumerate(data["scenes"]):
         log(f"scene {i+1}/{len(data['scenes'])}")
-        get_image((s["image_prompt"] + ", " + sty).strip(", "), WORK / f"{i}.jpg")
-        tts(s["narration"], WORK / f"{i}.mp3", WORK / f"{i}.srt")
         d = dur(WORK / f"{i}.mp3") or 10.0
-        frames = int(d * 25) + 10
-        zin = f"{0.18 / frames:.7f}"
-        z = f"1+{zin}*on" if i % 2 == 0 else f"1.18-{zin}*on"
-        zp = (f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,crop={W*2}:{H*2},"
-              f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=25,"
-              f"format=yuv420p")
-        once = ["-i", f"{i}.jpg", "-i", f"{i}.mp3", "-t", f"{d + 0.3:.2f}"]
-        loop = ["-loop", "1", "-i", f"{i}.jpg", "-i", f"{i}.mp3"]
-        attempts = []
-        if ZOOM:
-            attempts += [(once, zp, True), (once, zp, False)]
-        attempts += [(loop, base, True), (loop, base, False)]
-        has_srt = (WORK / f"{i}.srt").exists()
+        has_ass = (WORK / f"{i}.ass").exists()
         ok = False
-        for inp, vf, subs in attempts:
-            if subs and not has_srt:
-                continue
-            f = vf + (f",subtitles={i}.srt:force_style='{style}'" if subs else "")
-            if ffmpeg(inp + ["-vf", f] + af + enc + [f"{i}.mp4"]):
-                ok = True
-                break
+        q = (s.get("video_query") or "").strip()
+        if q and (PEXELS or PIXABAY) and fetch_clip(q, WORK / f"{i}.clip.mp4"):
+            clip_in = ["-stream_loop", "-1", "-i", f"{i}.clip.mp4", "-i", f"{i}.mp3",
+                       "-map", "0:v:0", "-map", "1:a:0", "-t", f"{d + 0.3:.2f}"]
+            ok = try_encode(i, [(clip_in, base)], has_ass, af, enc)
+            if not ok:
+                log("clip encode fail, image par")
+        if not ok:
+            get_image((s["image_prompt"] + ", " + sty).strip(", "), WORK / f"{i}.jpg")
+            frames = int(d * 25) + 10
+            zin = f"{0.18 / frames:.7f}"
+            z = f"1+{zin}*on" if i % 2 == 0 else f"1.18-{zin}*on"
+            zp = (f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,crop={W*2}:{H*2},"
+                  f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps=25,"
+                  f"format=yuv420p")
+            once = ["-i", f"{i}.jpg", "-i", f"{i}.mp3", "-t", f"{d + 0.3:.2f}"]
+            loop = ["-loop", "1", "-i", f"{i}.jpg", "-i", f"{i}.mp3"]
+            attempts = ([(once, zp)] if ZOOM else []) + [(loop, base)]
+            ok = try_encode(i, attempts, has_ass, af, enc)
         if not ok:
             raise RuntimeError("ffmpeg fail scene %d" % i)
         clips.append(f"{i}.mp4")
@@ -420,6 +580,8 @@ def full_description(data, durs):
     ch = chapters(data, durs)
     if ch:
         parts.append(ch)
+    if "Pexels" in CREDITS:
+        parts.append("Stock footage: Pexels (pexels.com)")
     tags = ["#" + re.sub(r"\s+", "", t) for t in data["tags"][:3] if t.strip()]
     if tags:
         parts.append(" ".join(tags))
@@ -463,6 +625,10 @@ def set_thumb(yt, vid, data, font):
         get_image(data.get("thumb_prompt") or data["scenes"][0]["image_prompt"],
                   WORK / "thumb_bg.jpg", 1280, 720)
         text = re.sub(r"[{}\\\n]", " ", data["thumb_text"]).strip()
+        latin = TSTYLE != "urdu"
+        if latin:
+            text = text.upper()
+        tfont = "Noto Sans" if latin else (font or "Noto Naskh Arabic")
         ass = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1280
@@ -470,7 +636,7 @@ PlayResY: 720
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: T,{font or 'Noto Naskh Arabic'},120,&H0000FFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,8,3,5,40,40,40,1
+Style: T,{tfont},110,&H0000FFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,8,3,5,40,40,40,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -499,6 +665,7 @@ if __name__ == "__main__":
     data = make_script(idea)
     log("Title:", data["title"])
     font = pick_font()
+    SUB_FONT = font
     log("subtitle font:", font)
     video, durs = build_video(data, font)
     data["description"] = full_description(data, durs)
