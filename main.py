@@ -63,7 +63,7 @@ WORK.mkdir(parents=True, exist_ok=True)
 HIST = pathlib.Path("history.json")
 history = json.loads(HIST.read_text()) if HIST.exists() else []
 UA = {"User-Agent": "Mozilla/5.0"}
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-flash-lite-latest"]
+GEMINI_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
 
 # 21 hook formulas (apni list, retention ke usool par)
 HOOKS = [
