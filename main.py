@@ -31,19 +31,21 @@ def E(k, d=None):
 
 
 KIND = sys.argv[1] if len(sys.argv) > 1 else "short"   # short | long
-NICHE = E("NICHE", "Hairat angez facts aur history ki kahaniyan")
+NICHE = E("NICHE", "Duniya bhar ki tareekh ke ajeeb raaz aur sachi kahaniyan: Islamic tareekh, Sahaba, Mughal, purani saltanatein, mashhoor jangein aur ankahi paheliyan (sirf mustanad waqiat)")
 LANG = E("LANGUAGE", "Urdu")
 VOICE = E("VOICE", "ur-PK-UzmaNeural")
 OFFSET = int(E("UTC_OFFSET_HOURS", "3"))
 PUB = E("SHORT_PUBLISH_TIME", "18:00") if KIND == "short" else E("LONG_PUBLISH_TIME", "20:00")
 GEMINI = (E("GEMINI_API_KEY") or "").strip()
+GROQ = (E("GROQ_API_KEY") or "").strip()      # free key: console.groq.com (Gemini ka backup)
+GROQ_MODELS = [m.strip() for m in E("GROQ_MODELS", "openai/gpt-oss-120b,llama-3.3-70b-versatile").split(",") if m.strip()]
 PKEY = (E("POLLINATIONS_API_KEY") or "").strip()
 ZOOM = E("KENBURNS", "1") == "1"            # slow zoom on images (0 = off)
 TREND = E("TREND_SEARCH", "1") == "1"        # niche mein chalne wale titles dekhna (0 = off)
 REL_LANG = E("RELEVANCE_LANG", "ur")
 PIXABAY = (E("PIXABAY_API_KEY") or "").strip()   # free key: asli stock video clips
 PEXELS = (E("PEXELS_API_KEY") or "").strip()     # free key (optional)
-TTS_ENGINE = E("TTS_ENGINE", "auto").lower()     # auto | gemini | edge
+TTS_ENGINE = E("TTS_ENGINE", "auto").lower()     # auto | eleven | gemini | edge
 GEM_VOICE = E("GEMINI_VOICE", "Charon")
 GEM_TTS_MODELS = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
 ELEVEN = (E("ELEVENLABS_API_KEY") or "").strip()
@@ -124,9 +126,10 @@ def post(url, payload, headers=None):
 
 
 def llm(prompt):
+    """Pehle Gemini (4 koshish), phir Groq, phir Pollinations."""
     last = None
     if GEMINI:
-        for attempt in range(10):
+        for attempt in range(4):
             model = GEMINI_MODELS[attempt % len(GEMINI_MODELS)]
             try:
                 r = post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
@@ -139,7 +142,20 @@ def llm(prompt):
             except Exception as e:
                 last = f"{model} {e!r}"
             log("LLM error:", last)
-            time.sleep(min(15 * (attempt + 1), 60))
+            time.sleep(min(10 * (attempt + 1), 40))
+    if GROQ:
+        for model in GROQ_MODELS:
+            try:
+                r = post("https://api.groq.com/openai/v1/chat/completions",
+                         {"model": model, "messages": [{"role": "user", "content": prompt}]},
+                         {"Authorization": "Bearer " + GROQ})
+                return r["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as e:
+                last = f"groq {model} HTTP {e.code}: {e.read()[:150]}"
+                log("LLM error:", last)
+            except Exception as e:
+                last = f"groq {model} {e!r}"
+                log("LLM error:", last)
     if PKEY:
         try:
             r = post("https://gen.pollinations.ai/v1/chat/completions",
@@ -187,7 +203,7 @@ def ask_json(prompt, check=False):
     raise RuntimeError("JSON parse fail")
 
 
-RULES = f"""Narration sirf {LANG} ki asli zaban aur uski apni script mein likho (Urdu ho to Urdu script: اردو، Roman/English letters ya Hindi/Devanagari mein bilkul nahi). Saaf, aasaan, bol-chaal wali zaban, chhote jumle. Har jumle ke aakhir mein poora stop. Numbers ko alfaz mein likho (jaise 1990 ki jagah poora lafz mein). English alfaz, brackets, emoji, hashtags aur special symbols narration mein mat daalo. Narration ke andar double quotes (\") istemal mat karo."""
+RULES = f"""Narration sirf {LANG} ki asli zaban aur uski apni script mein likho (Urdu ho to Urdu script: اردو، Roman/English letters ya Hindi/Devanagari mein bilkul nahi). Saaf, aasaan, bol-chaal wali zaban, chhote jumle. Har jumle ke aakhir mein poora stop. Numbers ko alfaz mein likho (jaise 1990 ki jagah poora lafz mein). English alfaz, brackets, emoji, hashtags aur special symbols narration mein mat daalo. Narration ke andar double quotes (\") istemal mat karo. Sirf mashhoor aur mustanad (verified) waqiat likho. Koi tareekh, naam, iqtibas ya hadith khud se mat banao. Agar kisi baat par yaqeen na ho to use mat likho. Kisi mazhab ya qaum ke baare mein tauheen ya be-buniyad dawa mat karo."""
 
 
 def get_yt():
@@ -408,7 +424,9 @@ def gemini_tts(text, mp3, ass):
                 time.sleep(5)
     raise RuntimeError("gemini tts fail: " + str(last))
 
+
 def eleven_tts(text, mp3, ass):
+    """ElevenLabs ki awaaz. Koi bhi masla ho to exception, aur upar agla engine le leta hai."""
     url = (f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE}"
            "?output_format=mp3_44100_128")
     last = None
@@ -437,9 +455,10 @@ def eleven_tts(text, mp3, ass):
             log("ElevenLabs:", last)
             time.sleep(5)
     raise RuntimeError("elevenlabs fail: " + str(last))
-    
+
+
 def voice_all(data):
-    """Poori video ki awaaz ek hi engine se: pehle Gemini, koi bhi scene fail ho to saari edge-tts se."""
+    """Poori video ki awaaz ek hi engine se: ElevenLabs, phir Gemini, phir edge-tts."""
     scenes = data["scenes"]
     if TTS_ENGINE in ("auto", "eleven") and ELEVEN:
         try:
@@ -574,6 +593,58 @@ def try_encode(i, attempts, has_ass, af, enc):
     return False
 
 
+XF = 0.25
+TRANS = ["fade", "slideleft", "fade", "wipeleft"]
+
+
+def join_xfade(clips, durs):
+    """Scenes ke beech smooth transition. Fail ho to False (phir seedha jod diya jata hai)."""
+    if len(clips) < 2 or E("TRANSITIONS", "1") != "1":
+        return False
+    try:
+        args, fc, off = [], [], 0.0
+        v, a = "[0:v]", "[0:a]"
+        for c in clips:
+            args += ["-i", c]
+        for i in range(1, len(clips)):
+            off += durs[i - 1] - XF
+            t = TRANS[i % len(TRANS)]
+            fc.append(f"{v}[{i}:v]xfade=transition={t}:duration={XF}:offset={off:.3f}[v{i}]")
+            fc.append(f"{a}[{i}:a]acrossfade=d={XF}[a{i}]")
+            v, a = f"[v{i}]", f"[a{i}]"
+        return ffmpeg(args + ["-filter_complex", ";".join(fc), "-map", v, "-map", a,
+                              "-r", "25", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                              "-c:a", "aac", "-ar", "44100", "-ac", "2", "final.mp4"])
+    except Exception as e:
+        log("xfade skip:", repr(e)[:150])
+        return False
+
+
+def add_music():
+    """Halki background music. repo mein music.mp3 ho to wo, warna ffmpeg se halki dhun."""
+    if E("MUSIC", "1") != "1":
+        return
+    try:
+        src = pathlib.Path("music.mp3").resolve()
+        if src.exists():
+            m = str(src)
+        else:
+            m = "bg.mp3"
+            if not ffmpeg(["-f", "lavfi", "-i",
+                           "aevalsrc=0.5*sin(2*PI*110*t)+0.3*sin(2*PI*165*t)+0.2*sin(2*PI*220*t):s=44100:d=60",
+                           "-af", "tremolo=f=0.15:d=0.4,lowpass=f=600,afade=t=in:d=3,afade=t=out:st=57:d=3",
+                           "-c:a", "libmp3lame", m]):
+                return
+        if ffmpeg(["-i", "final.mp4", "-stream_loop", "-1", "-i", m, "-filter_complex",
+                   "[1:a]volume=0.10[m];[0:a][m]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]",
+                   "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac",
+                   "-ar", "44100", "-ac", "2", "final_m.mp4"]):
+            os.replace(WORK / "final_m.mp4", WORK / "final.mp4")
+            log("music added")
+    except Exception as e:
+        log("music skip:", repr(e)[:150])
+
+
 def build_video(data, font):
     clips, durs = [], []
     base = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},format=yuv420p"
@@ -610,9 +681,14 @@ def build_video(data, font):
             raise RuntimeError("ffmpeg fail scene %d" % i)
         clips.append(f"{i}.mp4")
         durs.append(dur(WORK / f"{i}.mp4") or d)
-    (WORK / "list.txt").write_text("".join(f"file '{c}'\n" for c in clips))
-    if not ffmpeg(["-f", "concat", "-safe", "0", "-i", "list.txt", "-c", "copy", "final.mp4"]):
-        raise RuntimeError("concat fail")
+    if join_xfade(clips, durs):
+        durs = [x - XF for x in durs]
+        log("transitions: on")
+    else:
+        (WORK / "list.txt").write_text("".join(f"file '{c}'\n" for c in clips))
+        if not ffmpeg(["-f", "concat", "-safe", "0", "-i", "list.txt", "-c", "copy", "final.mp4"]):
+            raise RuntimeError("concat fail")
+    add_music()
     return WORK / "final.mp4", durs
 
 
