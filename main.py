@@ -46,6 +46,9 @@ PEXELS = (E("PEXELS_API_KEY") or "").strip()     # free key (optional)
 TTS_ENGINE = E("TTS_ENGINE", "auto").lower()     # auto | gemini | edge
 GEM_VOICE = E("GEMINI_VOICE", "Charon")
 GEM_TTS_MODELS = ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
+ELEVEN = (E("ELEVENLABS_API_KEY") or "").strip()
+ELEVEN_VOICE = E("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
+ELEVEN_MODEL = E("ELEVENLABS_MODEL", "eleven_v3")
 SUB_FONT = None
 USED_CLIPS = set()
 CREDITS = set()
@@ -405,10 +408,49 @@ def gemini_tts(text, mp3, ass):
                 time.sleep(5)
     raise RuntimeError("gemini tts fail: " + str(last))
 
-
+def eleven_tts(text, mp3, ass):
+    url = (f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE}"
+           "?output_format=mp3_44100_128")
+    last = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                url, json.dumps({"text": text, "model_id": ELEVEN_MODEL}).encode(),
+                {**UA, "Content-Type": "application/json", "xi-api-key": ELEVEN})
+            data = urllib.request.urlopen(req, timeout=180).read()
+            if len(data) < 5000:
+                raise RuntimeError("audio chhota")
+            pathlib.Path(mp3).write_bytes(data)
+            d = dur(mp3)
+            if d < 0.5:
+                raise RuntimeError("audio khali")
+            write_ass([(0.0, d, text)], ass)
+            return
+        except urllib.error.HTTPError as e:
+            last = f"HTTP {e.code}: {e.read()[:150]}"
+            log("ElevenLabs:", last)
+            if e.code in (401, 402, 403, 422):
+                break
+            time.sleep(5 * (attempt + 1))
+        except Exception as e:
+            last = repr(e)
+            log("ElevenLabs:", last)
+            time.sleep(5)
+    raise RuntimeError("elevenlabs fail: " + str(last))
+    
 def voice_all(data):
     """Poori video ki awaaz ek hi engine se: pehle Gemini, koi bhi scene fail ho to saari edge-tts se."""
     scenes = data["scenes"]
+    if TTS_ENGINE in ("auto", "eleven") and ELEVEN:
+        try:
+            for i, s in enumerate(scenes):
+                eleven_tts(s["narration"], WORK / f"{i}.mp3", WORK / f"{i}.ass")
+            log("voice: elevenlabs")
+            return
+        except Exception as e:
+            log("ElevenLabs nahi chali, aage fallback:", repr(e)[:200])
+            for f in WORK.glob("*.ass"):
+                f.unlink()
     if TTS_ENGINE in ("auto", "gemini") and GEMINI:
         try:
             for i, s in enumerate(scenes):
