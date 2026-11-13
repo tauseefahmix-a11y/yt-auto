@@ -758,8 +758,13 @@ def upload(yt, video, data):
 def set_thumb(yt, vid, data, font):
     """Long video ka thumbnail: AI image + bara text (title se alag). Channel verified ho to hi chalta hai."""
     try:
-        get_image(data.get("thumb_prompt") or data["scenes"][0]["image_prompt"],
-                  WORK / "thumb_bg.jpg", 1280, 720)
+        try:
+            get_image(data.get("thumb_prompt") or data["scenes"][0]["image_prompt"],
+                      WORK / "thumb_bg.jpg", 1280, 720)
+        except Exception:
+            log("thumb AI image fail, video ka frame use ho raha hai")
+            if not ffmpeg(["-ss", "8", "-i", "final.mp4", "-frames:v", "1", "-q:v", "2", "thumb_bg.jpg"]):
+                raise
         text = re.sub(r"[{}\\\n]", " ", data["thumb_text"]).strip()
         latin = TSTYLE != "urdu"
         if latin:
