@@ -129,7 +129,7 @@ def llm(prompt):
     """Pehle Gemini (4 koshish), phir Groq, phir Pollinations."""
     last = None
     if GEMINI:
-        for attempt in range(4):
+        for attempt in range(8):
             model = GEMINI_MODELS[attempt % len(GEMINI_MODELS)]
             try:
                 r = post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
@@ -142,7 +142,7 @@ def llm(prompt):
             except Exception as e:
                 last = f"{model} {e!r}"
             log("LLM error:", last)
-            time.sleep(min(10 * (attempt + 1), 40))
+            time.sleep(min(15 * (attempt + 1), 90))
     if GROQ:
         for model in GROQ_MODELS:
             try:
