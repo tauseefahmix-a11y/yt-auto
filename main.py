@@ -65,7 +65,7 @@ WORK.mkdir(parents=True, exist_ok=True)
 HIST = pathlib.Path("history.json")
 history = json.loads(HIST.read_text()) if HIST.exists() else []
 UA = {"User-Agent": "Mozilla/5.0"}
-GEMINI_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
+GEMINI_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"]
 
 # 21 hook formulas (apni list, retention ke usool par)
 HOOKS = [
@@ -193,8 +193,9 @@ def ask_json(prompt, check=False):
     for i in range(5):
         try:
             d = parse_json(llm(prompt))
-        except json.JSONDecodeError as e:
+        except (ValueError, RuntimeError) as e:
             log("JSON parse error, retry:", e)
+            time.sleep(10 * (i + 1))
             continue
         last = d
         if check and not lang_ok(d):
