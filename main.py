@@ -37,12 +37,18 @@ VOICE = E("VOICE", "ur-PK-UzmaNeural")
 OFFSET = int(E("UTC_OFFSET_HOURS", "3"))
 PUB = E("SHORT_PUBLISH_TIME", "18:00") if KIND == "short" else E("LONG_PUBLISH_TIME", "20:00")
 GEMINI = (E("GEMINI_API_KEY") or "").strip()
-GROQ = (E("GROQ_API_KEY") or "").strip()      # free key: console.groq.com (Gemini ka backup)
+_k1 = (E("GROQ_API_KEY") or "").strip()
+_k2 = (E("GROK_API_KEY") or "").strip()          # repo secret ka naam GROK_API_KEY hai, dono naam chalte hain
+XAI = next((k for k in (_k1, _k2, (E("XAI_API_KEY") or "").strip()) if k.startswith("xai-")), "")   # xAI Grok key
+GROQ = next((k for k in (_k1, _k2) if k and not k.startswith("xai-")), "")                        # Groq key (gsk_...)
 GROQ_MODELS = [m.strip() for m in E("GROQ_MODELS", "openai/gpt-oss-120b,llama-3.3-70b-versatile").split(",") if m.strip()]
+XAI_MODELS = [m.strip() for m in E("XAI_MODELS", "grok-4-fast-non-reasoning,grok-3-mini").split(",") if m.strip()]
 PKEY = (E("POLLINATIONS_API_KEY") or "").strip()
 ZOOM = E("KENBURNS", "1") == "1"            # slow zoom on images (0 = off)
 TREND = E("TREND_SEARCH", "1") == "1"        # niche mein chalne wale titles dekhna (0 = off)
-REL_LANG = E("RELEVANCE_LANG", "ur")
+REL_LANG = E("RELEVANCE_LANG", "")
+TREND_QUERIES = ["mysterious history", "Islamic history", "Mughal empire", "ancient battles", "untold history",
+                 "lost civilizations", "history mysteries", "famous wars history"]
 PIXABAY = (E("PIXABAY_API_KEY") or "").strip()   # free key: asli stock video clips
 PEXELS = (E("PEXELS_API_KEY") or "").strip()     # free key (optional)
 TTS_ENGINE = E("TTS_ENGINE", "auto").lower()     # auto | eleven | gemini | edge
@@ -55,10 +61,13 @@ SUB_FONT = None
 USED_CLIPS = set()
 CREDITS = set()
 # Title / description / thumbnail / chapters ki zaban: roman (Roman Urdu) | english | urdu
-TSTYLE = E("TITLE_STYLE", "roman").lower()
+TSTYLE = E("TITLE_STYLE", "english").lower()
 TDESC = {"roman": "Roman Urdu (English/Latin letters mein likhi Urdu, jaise: Is qile ka khofnak raaz)",
          "english": "simple English",
          }.get(TSTYLE, "Urdu script")
+TAGLANG = ("sirf English search keywords (jaise: islamic history, mughal empire, unsolved mysteries, ancient battles)"
+           if TSTYLE == "english" else "English aur Roman Urdu dono ke search alfaz")
+CTA = E("CTA", "Subscribe for a new true story from history every day.")
 W, H = (1080, 1920) if KIND == "short" else (1920, 1080)
 WORK = pathlib.Path("work") / KIND
 WORK.mkdir(parents=True, exist_ok=True)
@@ -125,11 +134,27 @@ def post(url, payload, headers=None):
     return json.loads(urllib.request.urlopen(req, timeout=240).read())
 
 
+def chat_models(name, url, key, models, prompt):
+    """OpenAI-compatible provider (Groq / xAI Grok / Pollinations). Pehla chalne wala jawab lautata hai."""
+    last = None
+    for model in models:
+        try:
+            r = post(url, {"model": model, "messages": [{"role": "user", "content": prompt}]},
+                     {"Authorization": "Bearer " + key})
+            return r["choices"][0]["message"]["content"], None
+        except urllib.error.HTTPError as e:
+            last = f"{name} {model} HTTP {e.code}: {e.read()[:150]}"
+        except Exception as e:
+            last = f"{name} {model} {e!r}"
+        log("LLM error:", last)
+    return None, last
+
+
 def llm(prompt):
-    """Pehle Gemini (4 koshish), phir Groq, phir Pollinations."""
+    """Pehle Gemini (4 models, 4 koshish), phir Groq, phir xAI Grok, phir Pollinations."""
     last = None
     if GEMINI:
-        for attempt in range(8):
+        for attempt in range(4):
             model = GEMINI_MODELS[attempt % len(GEMINI_MODELS)]
             try:
                 r = post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
@@ -142,29 +167,19 @@ def llm(prompt):
             except Exception as e:
                 last = f"{model} {e!r}"
             log("LLM error:", last)
-            time.sleep(min(15 * (attempt + 1), 90))
-    if GROQ:
-        for model in GROQ_MODELS:
-            try:
-                r = post("https://api.groq.com/openai/v1/chat/completions",
-                         {"model": model, "messages": [{"role": "user", "content": prompt}]},
-                         {"Authorization": "Bearer " + GROQ})
-                return r["choices"][0]["message"]["content"]
-            except urllib.error.HTTPError as e:
-                last = f"groq {model} HTTP {e.code}: {e.read()[:150]}"
-                log("LLM error:", last)
-            except Exception as e:
-                last = f"groq {model} {e!r}"
-                log("LLM error:", last)
-    if PKEY:
-        try:
-            r = post("https://gen.pollinations.ai/v1/chat/completions",
-                     {"model": "openai", "messages": [{"role": "user", "content": prompt}]},
-                     {"Authorization": "Bearer " + PKEY})
-            return r["choices"][0]["message"]["content"]
-        except Exception as e:
-            last = f"pollinations {e!r}"
-            log("LLM error:", last)
+            if attempt < 3:
+                time.sleep(5 * (attempt + 1))
+    for name, url, key, models in (
+            ("groq", "https://api.groq.com/openai/v1/chat/completions", GROQ, GROQ_MODELS),
+            ("grok", "https://api.x.ai/v1/chat/completions", XAI, XAI_MODELS),
+            ("pollinations", "https://gen.pollinations.ai/v1/chat/completions", PKEY, ["openai"])):
+        if not key:
+            continue
+        text, err = chat_models(name, url, key, models, prompt)
+        if text:
+            log("LLM jawab:", name)
+            return text
+        last = err or last
     raise RuntimeError("LLM fail: " + str(last))
 
 
@@ -220,10 +235,15 @@ def trending(yt):
     if not TREND:
         return []
     try:
-        since = (datetime.datetime.utcnow() - datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        r = yt.search().list(part="snippet", q=NICHE[:60], type="video", order="viewCount",
-                             publishedAfter=since, maxResults=10, relevanceLanguage=REL_LANG).execute()
-        t = [i["snippet"]["title"] for i in r.get("items", [])]
+        since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        t = []
+        for q in random.sample(TREND_QUERIES, 2):
+            kw = dict(part="snippet", q=E("TREND_QUERY", q), type="video", order="viewCount",
+                      publishedAfter=since, maxResults=10)
+            if REL_LANG:
+                kw["relevanceLanguage"] = REL_LANG
+            r = yt.search().list(**kw).execute()
+            t += [i["snippet"]["title"] for i in r.get("items", [])]
         log("trend titles:", len(t))
         return t
     except Exception as e:
@@ -283,7 +303,7 @@ Har scene ka "chapter": 2 se 4 alfaz ka chhota unwan, {TDESC} mein.
 "thumb_prompt": thumbnail ke liye English mein dramatic close-up prompt, no text in image.
 {RULES}
 Sirf JSON do, aur kuch nahi:
-{{"title": "...", "thumb_text": "...", "description": "({TDESC} mein, 2-3 jumle, pehle jumle mein main keyword)", "tags": ["8-12 tags: English aur Roman Urdu dono ke search alfaz"],
+{{"title": "...", "thumb_text": "...", "description": "({TDESC} mein, 3-4 jumle: pehle jumle mein main keyword aur hook, phir yeh ke video mein kya milega; hashtags nahi)", "tags": ["10-12 tags: {TAGLANG}"],
  "style": "...", "thumb_prompt": "...",
  "scenes": [{{"narration": "...", "image_prompt": "English mein detailed visual prompt, no text in image", "video_query": "2-3 English alfaz stock-footage search ke liye (aam aur dekhne wali cheez, jaise: desert sunset, soldiers marching, old map)", "chapter": "..."}}]}}"""
             data = ask_json(prompt, True)
@@ -722,7 +742,10 @@ def full_description(data, durs):
         parts.append(ch)
     if "Pexels" in CREDITS:
         parts.append("Stock footage: Pexels (pexels.com)")
+    parts.append(CTA)
     tags = ["#" + re.sub(r"\s+", "", t) for t in data["tags"][:3] if t.strip()]
+    if KIND == "short" and "#Shorts" not in tags:
+        tags.append("#Shorts")
     if tags:
         parts.append(" ".join(tags))
     return "\n\n".join(p for p in parts if p)[:4900]
@@ -731,7 +754,7 @@ def full_description(data, durs):
 # ---------- 6. Upload + schedule + thumbnail ----------
 def publish_at():
     h, m = map(int, PUB.split(":"))
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc)
     t = now.replace(hour=(h - OFFSET) % 24, minute=m, second=0, microsecond=0)
     while t < now + datetime.timedelta(hours=1):
         t += datetime.timedelta(days=1)
@@ -747,7 +770,9 @@ def upload(yt, video, data):
         tags.append(t)
         n += len(t) + 1
     body = {"snippet": {"title": title, "description": data["description"],
-                        "tags": tags, "categoryId": "27"},
+                        "tags": tags, "categoryId": "27",
+                        "defaultLanguage": "en" if TSTYLE == "english" else "ur",
+                        "defaultAudioLanguage": "ur" if LANG.lower() == "urdu" else "en"},
             "status": {"privacyStatus": "private", "publishAt": publish_at(),
                        "selfDeclaredMadeForKids": False}}
     req = yt.videos().insert(part="snippet,status", body=body,
@@ -757,6 +782,19 @@ def upload(yt, video, data):
         resp = next_chunk_retry(req)
     log("Uploaded:", resp["id"], "publishAt", body["status"]["publishAt"])
     return resp["id"]
+
+
+def add_playlist(yt, vid):
+    """Optional: PLAYLIST_SHORT / PLAYLIST_LONG (playlist id) set ho to video us mein chala jata hai."""
+    pid = E("PLAYLIST_SHORT") if KIND == "short" else E("PLAYLIST_LONG")
+    if not pid:
+        return
+    try:
+        yt.playlistItems().insert(part="snippet", body={"snippet": {
+            "playlistId": pid, "resourceId": {"kind": "youtube#video", "videoId": vid}}}).execute()
+        log("Playlist mein add")
+    except Exception as e:
+        log("Playlist skip:", repr(e)[:200])
 
 
 def set_thumb(yt, vid, data, font):
@@ -815,6 +853,7 @@ if __name__ == "__main__":
     video, durs = build_video(data, font)
     data["description"] = full_description(data, durs)
     vid = upload(yt, video, data)
+    add_playlist(yt, vid)
     if KIND == "long" and data.get("thumb_text"):
         set_thumb(yt, vid, data, font)
     history.append(data["title"])
