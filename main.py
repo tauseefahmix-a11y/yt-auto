@@ -169,7 +169,10 @@ def llm(prompt):
 
 
 def parse_json(t):
+    t = t or ""
     m = re.search(r"\{.*\}", t, re.S)
+    if not m:
+        raise ValueError(f"No JSON in LLM output: {str(t)[:200]}")
     return json.loads(m.group(0))
 
 
