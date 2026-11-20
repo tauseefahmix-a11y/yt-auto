@@ -31,7 +31,9 @@ def E(k, d=None):
 
 
 KIND = sys.argv[1] if len(sys.argv) > 1 else "short"   # short | long
-NICHE = E("NICHE", "Duniya bhar ki tareekh ke ajeeb raaz aur sachi kahaniyan: Islamic tareekh, Sahaba, Mughal, purani saltanatein, mashhoor jangein aur ankahi paheliyan (sirf mustanad waqiat)")
+# Sirf EK niche: poora channel isi par chalta hai. Badalna ho to workflow mein NICHE / NICHE_KEYWORD env do.
+NICHE = E("NICHE", "Islamic tareekh ki sachi kahaniyan: Anbiya, Sahaba kiram aur Islami fatuhat (sirf mustanad waqiat)")
+NICHE_KEY = E("NICHE_KEYWORD", "Islamic history")   # trend search ke liye chhota English keyword
 LANG = E("LANGUAGE", "Urdu")
 VOICE = E("VOICE", "ur-PK-UzmaNeural")
 OFFSET = int(E("UTC_OFFSET_HOURS", "3"))
@@ -275,7 +277,7 @@ def ask_json(prompt, check=False):
     raise RuntimeError("JSON parse fail")
 
 
-RULES = f"""Narration sirf {LANG} ki asli zaban aur uski apni script mein likho (Urdu ho to Urdu script: اردو، Roman/English letters ya Hindi/Devanagari mein bilkul nahi). Saaf, aasaan, bol-chaal wali zaban, chhote jumle. Har jumle ke aakhir mein poora stop. Numbers ko alfaz mein likho (jaise 1990 ki jagah poora lafz mein). English alfaz, brackets, emoji, hashtags aur special symbols narration mein mat daalo. Narration ke andar double quotes (\") istemal mat karo. Sirf mashhoor aur mustanad (verified) waqiat likho. Koi tareekh, naam, iqtibas ya hadith khud se mat banao. Agar kisi baat par yaqeen na ho to use mat likho. Kisi mazhab ya qaum ke baare mein tauheen ya be-buniyad dawa mat karo."""
+RULES = f"""Narration sirf {LANG} ki asli zaban aur uski apni script mein likho (Urdu ho to Urdu script: اردو، Roman/English letters ya Hindi/Devanagari mein bilkul nahi). Saaf, aasaan, bol-chaal wali zaban, chhote jumle. Har jumle ke aakhir mein poora stop. Numbers ko alfaz mein likho (jaise 1990 ki jagah poora lafz mein). English alfaz, brackets, emoji, hashtags aur special symbols narration mein mat daalo. Narration ke andar double quotes (\") istemal mat karo. Sirf mashhoor aur mustanad (verified) waqiat likho. Koi tareekh, naam, iqtibas ya hadith khud se mat banao. Agar kisi baat par yaqeen na ho to use mat likho. Kisi mazhab ya qaum ke baare mein tauheen ya be-buniyad dawa mat karo. Topic hamesha sirf is niche ke andar ka ho: {NICHE}. Is se bahar ka koi topic, mauzu ya mix mat karo."""
 
 
 def get_yt():
@@ -289,7 +291,7 @@ def trending(yt):
         return []
     try:
         since = (datetime.datetime.utcnow() - datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        r = yt.search().list(part="snippet", q=NICHE[:60], type="video", order="viewCount",
+        r = yt.search().list(part="snippet", q=NICHE_KEY, type="video", order="viewCount",
                              publishedAfter=since, maxResults=10, relevanceLanguage=REL_LANG).execute()
         t = [i["snippet"]["title"] for i in r.get("items", [])]
         log("trend titles:", len(t))
@@ -306,7 +308,7 @@ def make_idea(trend):
     prompt = f"""Channel niche: {NICHE}. Language: {LANG}. Format: {KIND}.
 In purane topics repeat mat karo: {history[-40:]}
 {trend_line}
-3 alag topic ideas do. Har idea ke liye:
+3 alag topic ideas do, teeno isi niche ke andar (niche se bahar ek bhi nahi). Har idea ke liye:
 - title: max 55 characters, curiosity wala, {TDESC} mein (clickable, search-friendly)
 - thumb_text: 2 se 4 alfaz, {TDESC} mein, title ke alfaz dohraye bina, jo title ko mukammal kare (title aur thumb_text ek jodi hain)
 - hook: video ka pehla jumla (yeh narration hai, is liye {LANG} ki apni script mein), 6 se 14 alfaz, in formulas mein se koi ek: {formulas}
@@ -338,7 +340,7 @@ def make_script(idea):
     if idea:
         topic = f"Title: {idea['title']}. Pehle scene ka pehla jumla bilkul yeh ho: {idea['hook']}"
     else:
-        topic = f"Naya topic khud chuno. In purane topics repeat mat karo: {history[-40:]}"
+        topic = f"Naya topic khud chuno (sirf isi niche ke andar). In purane topics repeat mat karo: {history[-40:]}"
     data = None
     for p in range(parts):
         if data is None:
