@@ -40,7 +40,6 @@ GEMINI = (E("GEMINI_API_KEY") or "").strip()
 GROQ = (E("GROQ_API_KEY") or "").strip()      # free key: console.groq.com (Gemini ka backup)
 GROQ_MODELS = [m.strip() for m in E("GROQ_MODELS", "openai/gpt-oss-120b,llama-3.3-70b-versatile").split(",") if m.strip()]
 PKEY = (E("POLLINATIONS_API_KEY") or "").strip()
-MAXSHOTS = int(E("CLIPS_PER_SCENE", "3" if KIND == "short" else "4"))   # ek scene mein kitne alag clips
 ZOOM = E("KENBURNS", "1") == "1"            # slow zoom on images (0 = off)
 TREND = E("TREND_SEARCH", "1") == "1"        # niche mein chalne wale titles dekhna (0 = off)
 REL_LANG = E("RELEVANCE_LANG", "ur")
@@ -126,11 +125,74 @@ def post(url, payload, headers=None):
     return json.loads(urllib.request.urlopen(req, timeout=240).read())
 
 
+# freellmapi repo ke free OpenAI-compatible providers (sab optional: key ho to chalte hain)
+BAD = set()   # jis provider ki key galat / credit khatam ho, use is run mein dobara nahi try karte
+
+
+def oai_providers():
+    P = []
+
+    def add(name, key, base, models):
+        key = (key or "").strip()
+        ms = [m.strip() for m in (models or "").split(",") if m.strip()]
+        if key and ms and name not in BAD:
+            P.append((name, key, base, ms))
+
+    gk = (E("GROK_API_KEY") or "").strip()
+    if gk.startswith("gsk_"):      # naam Grok hai lekin asal mein Groq ki key
+        add("groq2", gk, "https://api.groq.com/openai/v1", ",".join(GROQ_MODELS))
+    else:
+        add("xai", gk, "https://api.x.ai/v1", E("GROK_MODELS", "grok-4-fast,grok-3-mini"))
+    add("cerebras", E("CEREBRAS_API_KEY"), "https://api.cerebras.ai/v1",
+        E("CEREBRAS_MODELS", "gpt-oss-120b"))
+    add("openrouter", E("OPENROUTER_API_KEY"), "https://openrouter.ai/api/v1",
+        E("OPENROUTER_MODELS", "openai/gpt-oss-120b:free,meta-llama/llama-3.3-70b-instruct:free"))
+    add("nvidia", E("NVIDIA_API_KEY"), "https://integrate.api.nvidia.com/v1",
+        E("NVIDIA_MODELS", "meta/llama-3.3-70b-instruct"))
+    add("mistral", E("MISTRAL_API_KEY"), "https://api.mistral.ai/v1",
+        E("MISTRAL_MODELS", "mistral-small-latest"))
+    add("ollama", E("OLLAMA_API_KEY"), "https://ollama.com/v1",
+        E("OLLAMA_MODELS", "gpt-oss:120b"))
+    add("huggingface", E("HF_TOKEN"), "https://router.huggingface.co/v1",
+        E("HF_MODELS", "meta-llama/Llama-3.3-70B-Instruct"))
+    fu = (E("FREELLMAPI_URL") or "").strip().rstrip("/")   # apna self-hosted FreeLLMAPI (optional)
+    if fu:
+        add("freellmapi", E("FREELLMAPI_KEY"), fu if fu.endswith("/v1") else fu + "/v1",
+            E("FREELLMAPI_MODELS", "auto"))
+    return P
+
+
+def llm_oai_chain(prompt):
+    last = None
+    for name, key, base, models in oai_providers():
+        for model in models:
+            try:
+                r = post(base + "/chat/completions",
+                         {"model": model, "messages": [{"role": "user", "content": prompt}]},
+                         {"Authorization": "Bearer " + key})
+                txt = r["choices"][0]["message"].get("content") or ""
+                if txt.strip():
+                    log(f"LLM: {name} / {model}")
+                    return txt
+                last = f"{name} {model} khali jawab"
+            except urllib.error.HTTPError as e:
+                last = f"{name} {model} HTTP {e.code}: {e.read()[:120]}"
+                if e.code in (401, 402, 403):      # key galat ya credit khatam: poora provider chhor do
+                    BAD.add(name)
+                    log("LLM error:", last)
+                    break
+            except Exception as e:
+                last = f"{name} {model} {e!r:.150}"
+            log("LLM error:", last)
+    return None, last
+
+
 def llm(prompt):
-    """Pehle Gemini (4 koshish), phir Groq, phir Pollinations."""
+    """Gemini -> Groq -> (Grok, Cerebras, OpenRouter, NVIDIA, Mistral, Ollama, HF, FreeLLMAPI) -> Pollinations."""
     last = None
     if GEMINI:
-        for attempt in range(8):
+        tries = int(E("GEMINI_TRIES", "4"))
+        for attempt in range(tries):
             model = GEMINI_MODELS[attempt % len(GEMINI_MODELS)]
             try:
                 r = post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
@@ -143,7 +205,8 @@ def llm(prompt):
             except Exception as e:
                 last = f"{model} {e!r}"
             log("LLM error:", last)
-            time.sleep(min(15 * (attempt + 1), 90))
+            if attempt < tries - 1:
+                time.sleep(min(8 * (attempt + 1), 40))
     if GROQ:
         for model in GROQ_MODELS:
             try:
@@ -157,6 +220,10 @@ def llm(prompt):
             except Exception as e:
                 last = f"groq {model} {e!r}"
                 log("LLM error:", last)
+    res = llm_oai_chain(prompt)
+    if isinstance(res, str):
+        return res
+    last = res[1] or last
     if PKEY:
         try:
             r = post("https://gen.pollinations.ai/v1/chat/completions",
@@ -282,12 +349,11 @@ Pehle {n} scenes do, har scene ki narration ~{words} alfaz.
 Har scene ka "chapter": 2 se 4 alfaz ka chhota unwan, {TDESC} mein.
 "style": ek English line jo poore video ke visuals ka ek jaisa look tay kare (art style, colour palette, lighting).
 "thumb_prompt": thumbnail ke liye English mein dramatic close-up prompt, no text in image.
-Har scene ka "video_queries": 4 English search queries (har ek 2-3 alfaz), narration ki tarteeb se: jis waqt jo cheez bol rahe ho wahi dikhao. Sirf aam, aasaan, nazar aane wali cheezein (jaise: desert caravan, old stone fort, marching soldiers, ancient manuscript). Abstract alfaz (history, mystery, secret, power) aur kisi khaas shakhs ka naam bilkul nahi.
 {RULES}
 Sirf JSON do, aur kuch nahi:
 {{"title": "...", "thumb_text": "...", "description": "({TDESC} mein, 2-3 jumle, pehle jumle mein main keyword)", "tags": ["8-12 tags: English aur Roman Urdu dono ke search alfaz"],
  "style": "...", "thumb_prompt": "...",
- "scenes": [{{"narration": "...", "image_prompt": "English mein detailed visual prompt, no text in image", "video_queries": ["...", "...", "...", "..."], "video_query": "2-3 English alfaz (sab se aam shot)", "chapter": "..."}}]}}"""
+ "scenes": [{{"narration": "...", "image_prompt": "English mein detailed visual prompt, no text in image", "video_query": "2-3 English alfaz stock-footage search ke liye (aam aur dekhne wali cheez, jaise: desert sunset, soldiers marching, old map)", "chapter": "..."}}]}}"""
             data = ask_json(prompt, True)
         else:
             prompt = f"""Video ka title: {data['title']}. Language: {LANG}.
@@ -296,8 +362,7 @@ Isi kahani ko agle {n} scenes mein jaari rakho (~{words} alfaz har scene, aakhri
 {end_rule}
 {RULES}
 Har scene ka "chapter": 2 se 4 alfaz, {TDESC} mein.
-Har scene ka "video_queries": 4 English search queries (har ek 2-3 alfaz), narration ki tarteeb se: jis waqt jo cheez bol rahe ho wahi dikhao. Sirf aam, aasaan, nazar aane wali cheezein (jaise: desert caravan, old stone fort, marching soldiers, ancient manuscript). Abstract alfaz (history, mystery, secret, power) aur kisi khaas shakhs ka naam bilkul nahi.
-Sirf JSON: {{"scenes": [{{"narration": "...", "image_prompt": "English visual prompt", "video_queries": ["...", "...", "...", "..."], "video_query": "2-3 English alfaz (sab se aam shot)", "chapter": "..."}}]}}"""
+Sirf JSON: {{"scenes": [{{"narration": "...", "image_prompt": "English visual prompt", "video_query": "2-3 English alfaz stock-footage search ke liye", "chapter": "..."}}]}}"""
             data["scenes"] += ask_json(prompt, True)["scenes"]
     if idea:
         data["title"], data["thumb_text"] = idea["title"], idea["thumb_text"]
@@ -591,45 +656,6 @@ def fetch_clip(q, path):
     return False
 
 
-def scene_footage(s, i, d, base):
-    """Ek scene ke liye kai chhote shots (har ek alag query) jod kar {i}.clip.mp4 banata hai.
-    Isse screen voice ke sath badalti hai, aur ek hi clip lambi voice par loop nahi hoti."""
-    qs = [str(x).strip() for x in (s.get("video_queries") or []) if str(x).strip()]
-    q0 = (s.get("video_query") or "").strip()
-    if q0 and q0 not in qs:
-        qs.append(q0)
-    if not qs:
-        return False
-    total = d + 0.3
-    want = max(1, min(MAXSHOTS, int(total // 3.5)))
-    got = []
-    for k, q in enumerate(qs):
-        if len(got) >= want:
-            break
-        p = WORK / f"{i}.c{k}.mp4"
-        if fetch_clip(q, p):
-            got.append(p)
-    if not got:
-        return False
-    seg = total / len(got)
-    parts = []
-    for k, p in enumerate(got):
-        out = f"{i}.s{k}.mp4"
-        if ffmpeg(["-stream_loop", "-1", "-i", p.name, "-t", f"{seg:.2f}", "-vf", base, "-r", "25",
-                   "-an", "-c:v", "libx264", "-preset", "veryfast", out]):
-            parts.append(out)
-    if not parts:
-        return False
-    final = WORK / f"{i}.clip.mp4"
-    if len(parts) > 1:
-        (WORK / f"{i}.shots.txt").write_text("".join(f"file '{x}'\n" for x in parts))
-        if ffmpeg(["-f", "concat", "-safe", "0", "-i", f"{i}.shots.txt", "-c", "copy", f"{i}.clip.mp4"]):
-            log(f"scene {i+1}: {len(parts)} shots")
-            return True
-    os.replace(WORK / parts[0], final)
-    return True
-
-
 def try_encode(i, attempts, has_ass, af, enc):
     for inp, vf in attempts:
         for subs in ([True, False] if has_ass else [False]):
@@ -704,7 +730,8 @@ def build_video(data, font):
         d = dur(WORK / f"{i}.mp3") or 10.0
         has_ass = (WORK / f"{i}.ass").exists()
         ok = False
-        if (PEXELS or PIXABAY) and scene_footage(s, i, d, base):
+        q = (s.get("video_query") or "").strip()
+        if q and (PEXELS or PIXABAY) and fetch_clip(q, WORK / f"{i}.clip.mp4"):
             clip_in = ["-stream_loop", "-1", "-i", f"{i}.clip.mp4", "-i", f"{i}.mp3",
                        "-map", "0:v:0", "-map", "1:a:0", "-t", f"{d + 0.3:.2f}"]
             ok = try_encode(i, [(clip_in, base)], has_ass, af, enc)
